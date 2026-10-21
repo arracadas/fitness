@@ -1,0 +1,590 @@
+---
+title: "Market Intelligence - Club Profitability Analysis"
+author: "jortega"
+date: "August 2026"
+format:
+  pdf:
+    documentclass: article
+    papersize: letter
+    geometry:
+      - left=1in
+      - right=1in
+      - top=1in
+      - bottom=1in
+    classoption: [oneside,11pt]
+    include-in-header:
+      text: |-
+        \usepackage[utf8]{inputenc}
+        \usepackage{graphicx}
+        \usepackage{float}
+knit: knitr
+engine: knitr
+---
+
+```{r setup, include=FALSE}
+# Set working directory to the project root where data/ exists
+# The .qmd file is in R/ subdirectory, so we need to go up one level
+knitr::opts_knit$set(root.dir = normalizePath('..'))
+
+# Load libraries
+library(tidyverse)
+library(dplyr)
+library(knitr)
+library(scales)
+library(patchwork)
+library(tinytex)
+```
+
+```{r load-data}
+# Read data from the project root's data directory
+club_master <- readRDS("data/club_master.rds")
+members_year <- readRDS("data/members_year.rds")
+club_performance <- readRDS("data/club_performance.rds")
+club_perf_year4 <- readRDS("data/club_perf_year4.rds")
+rf_importance <- readRDS("data/rf_importance.rds")
+```
+
+# Report
+# Title: Market Intelligence
+# Subtitle: Club characteristics and Market Factors Driving Profitability
+
+
+
+```{r custom-theme}
+# Custom color palette (including chocolate3)
+custom_palette <- c(
+  "chocolate3",    # Your requested color
+  "#E69F00",       # Orange
+  "#56B4E9",       # Sky Blue
+  "#009E73",       # Teal
+  "#F0E442"        # Yellow
+)
+
+# Define a reusable theme
+fit_theme <- function() {
+  theme_minimal() +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(face = "bold", size = 14, hjust = 0.5, color = "gray30"),
+      plot.subtitle = element_text(face = "italic", size = 10, hjust = 0.5, color = "gray30"),
+      axis.title = element_text(face = "bold", size = 12, color = "gray30"),
+      axis.text = element_text(size = 11, color = "gray30", family = "Helvetica"),
+      strip.text = element_text(face = "bold", size = 10, color = "gray30"),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_blank()
+    )
+}
+```
+
+## Histograms - Active Members, Revenue Per SqFt, EBITDA Per SqFt
+
+*Chart: Distribution of Active Members, EBITDA and Revenue*
+
+*Text: The average mature club has 8,000 active members, with revenue close to $100 (per sqft) and profit of $40 (per sqft).*
+
+```{r histograms, fig.height=8, fig.width=10}
+# Prepare Data
+perf_metrics <- club_perf_year4 %>%
+  select(RevenuePerSqFt, EBITDAPerSqFt, ActiveMembers) %>%
+  pivot_longer(cols = everything(), names_to = "PerformanceMetric", values_to = "Value")
+
+# Calculate median values for each PerformanceMetric
+median_values <- perf_metrics %>%
+  group_by(PerformanceMetric) %>%
+  summarise(Median = median(Value, na.rm = TRUE)) %>%
+  ungroup()
+
+# Plot with vertical faceting and custom colors
+ggplot(perf_metrics, aes(x = Value, fill = PerformanceMetric)) +
+  geom_histogram(bins = 10, alpha = 0.7, position = "dodge") +
+  geom_vline(
+    data = median_values,
+    aes(xintercept = Median),
+    linetype = "dotted",
+    color = "indianred4",
+    linewidth = 0.8
+  ) +
+  scale_fill_manual(values = custom_palette) +  # Apply custom palette
+  facet_wrap(~ PerformanceMetric, scales = "free_x") +  # Vertical faceting
+  labs(
+    title = "Distribution of Performance Metrics",
+    subtitle = "Mature Clubs. Vertical dotted lines indicate median values",
+    x = "",
+    y = "Frequency"
+  ) +
+  fit_theme()
+```
+
+## Scatter Plot: Revenue Per SqFt vs EBITDA Per SqFt
+
+*Chart: Relationship between Revenue and Profitability*
+
+*Text: Not surprisingly higher revenue leads to higher profits; there are three clubs that stand out: Catonsville, Penn Station and Golden Ring.*
+
+```{r scatter-revenue-eft, fig.height=8, fig.width=10}
+# Scatterplot of RevenuePerSqFt vs. EBITDAPerSqFt with fitted line
+ggplot(club_perf_year4, aes(x = RevenuePerSqFt, y = EBITDAPerSqFt)) +
+  geom_point(
+    aes(color = EBITDAPerSqFt > 80),
+    alpha = 0.6,
+    size = 4
+  ) +
+  scale_color_manual(
+    values = c("FALSE" = custom_palette[1], "TRUE" = custom_palette[4]),
+  ) +
+  geom_text(
+    data = club_perf_year4 %>% filter(EBITDAPerSqFt > 80),
+    aes(x = RevenuePerSqFt, y = EBITDAPerSqFt, label = ClubName),
+    hjust = 1.2,
+    vjust = 0,
+    color = custom_palette[4],
+    size = 3.5,
+    fontface = "bold"
+  ) +
+  geom_text(
+    data = club_perf_year4 %>% filter(RevenuePerSqFt < 40),
+    aes(x = RevenuePerSqFt, y = EBITDAPerSqFt, label = ClubName),
+    hjust = 0.1,
+    vjust = -1,
+    color = custom_palette[1],
+    size = 3.5,
+    fontface = "bold"
+  ) +
+  geom_hline(
+    yintercept = 0,  # Horizontal line at EBITDAPerSqFt == 0
+    color = custom_palette[2],
+    linetype = "solid",
+    linewidth = 0.5
+  ) +
+  geom_smooth(
+    method = "lm",  # Linear regression
+    se = FALSE,
+    color = custom_palette[3],
+    linewidth = 0.8,
+    linetype = "dashed"
+  ) +
+  scale_y_continuous(breaks = seq(-20, 140, by = 20)) +
+  labs(
+    title = "Revenue vs. Profitability",
+    subtitle = "Clubs with EBITDA Per SqFt > 80 are highlighted",
+    x = "Revenue Per SqFt ($)",
+    y = "EBITDA Per SqFt ($)"
+  ) +
+  fit_theme() +
+  theme(
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.2)
+  )
+```
+
+## Scatter Plot: Club Size vs Revenue Per SqFt
+
+*Chart: Relationship between Club Size and Revenue (per sqft)*
+
+*Text: The most profitable clubs tend to be smaller in size.*
+
+```{r scatter-size-revenue, fig.height=8, fig.width=10}
+# Scatterplot of RevenuePerSqFt vs. Size
+ggplot(filter(club_perf_year4, RevenuePerSqFt > 40),
+       aes(x = Size, y = RevenuePerSqFt, color = EBITDAPerSqFtCat)) +
+  geom_point(
+    alpha = 0.6,
+    size = 4
+  ) +
+  scale_color_manual(
+    name = "Profitability",
+    values = c("Low" = custom_palette[1], "Medium" = custom_palette[2], "High" = custom_palette[3])
+  ) +
+  geom_hline(
+    yintercept = 0,
+    color = custom_palette[2],
+    linetype = "solid",
+    linewidth = 0.5
+  ) +
+  geom_text(
+    data = club_perf_year4 %>% filter(ClubNumber %in% c(105, 108, 109)),
+    aes(x = Size, y = RevenuePerSqFt, label = paste0(ClubName," - ", PopDensityType)),
+    hjust = 0.1,
+    vjust = -1,
+    color = custom_palette[3],
+    size = 3.5,
+    fontface = "bold"
+  ) +
+  geom_smooth(
+    method = "lm",
+    se = FALSE,
+    color = custom_palette[3],
+    linewidth = 0.8,
+    linetype = "dashed"
+  ) +
+  scale_x_continuous(breaks = seq(10000, 34000, by = 2500)) +
+  scale_y_continuous(limits = c(-10, 200)) +
+  labs(
+    title = "Are Bigger Clubs More Profitable?",
+    subtitle = "Excludes 309 - North Miami Beach",
+    x = "Club Size",
+    y = "Revenue Per SqFt ($)"
+  ) +
+  fit_theme() +
+  theme(
+    legend.position = "right",
+    panel.grid.major.x = element_line(color = "gray90", linewidth = 0.2)
+  )
+```
+
+## Boxplot: EBITDA PER SQFT, Mature Clubs (Year 4)
+
+*Chart: Segmenting Mature Clubs by Profitability*
+
+*Text: We can group the clubs according to profitability using percentiles: 25% and 75%. The three groups correspond to Low, Medium and High profit clubs.*
+
+```{r boxplot-ebitda, fig.height=6, fig.width=8}
+# Calculate median EBITDAPerSqFt for each category
+median_ebitda <- club_perf_year4 %>%
+  group_by(EBITDAPerSqFtCat) %>%
+  summarise(MedianEBITDAPerSqFt = median(EBITDAPerSqFt, na.rm = TRUE),
+            n = n()
+            ) %>%
+  ungroup()
+
+# EBITDA Per SqFt
+ggplot(club_perf_year4, aes(x = EBITDAPerSqFt, y = EBITDAPerSqFtCat, fill = EBITDAPerSqFtCat)) +
+  geom_boxplot() +
+  geom_point(position = position_jitter(height = 0.1), alpha = 0.5, color = "gray52") +
+  # Annotate median values below the boxplots
+  geom_text(
+    data = median_ebitda,
+    aes(
+      x = MedianEBITDAPerSqFt,
+      y = EBITDAPerSqFtCat,
+      label = paste0("$", round(MedianEBITDAPerSqFt, 0))
+    ),
+    vjust = -5.4,
+    hjust = 0.5,
+    color = "gray30",
+    size = 3.5,
+    fontface = "bold"
+  ) +
+  geom_text(
+    data = median_ebitda,
+    aes(
+      x = 120,
+      y = EBITDAPerSqFtCat,
+      label = paste0("n = ", n)
+    ),
+    color = "grey60",
+    size = 4.5,
+    fontface = "bold"
+  ) +
+  labs(
+    title = "Segmentation by Profitability - Mature Clubs",
+    subtitle = "Values shown for the Average Club",
+    x = "EBITDA Per SqFt",
+    y = "Category"
+  ) +
+  scale_y_discrete(limits = c("Low", "Medium", "High")) +
+  scale_fill_manual(values = custom_palette) +
+  scale_x_continuous(labels = function(x) paste0("$", round(x, 1))) +
+  fit_theme()
+```
+
+*Clubs with EBITDA close to zero*
+* 301 - Coconut Creek, FL*
+* 303 - Pompano, FL*
+* 309 - North Miami Beach, FL*
+* 128 - Penn Branch, DC*
+
+## Performance Metrics: Growth % Years 0-4, Mature Clubs (Year 4)
+
+*Chart: Segmenting Mature Clubs by Growth %*
+
+*Text: Clubs are also grouped by Growth % using the same percentiles: 25% and 75%.*
+
+```{r boxplot-growth, fig.height=6, fig.width=8}
+# Calculate median Growth % 04 for each category
+median_cagryears04 <- club_perf_year4 %>%
+  filter(!is.na(CAGRYears04)) %>%
+  group_by(CAGRYears04Cat) %>%
+  summarise(MedianCAGRYears04 = median(CAGRYears04, na.rm = TRUE),
+            n = n()
+            ) %>%
+  ungroup()
+
+# Subset to records where CAGRYears47 is not NULL and exclude 309 - Miami Beach (low revenue)
+plot_data <- club_perf_year4 %>%
+  filter(!is.na(CAGRYears04))
+
+# Growth % (Years 0-4)
+ggplot(plot_data, aes(x = CAGRYears04, y = CAGRYears04Cat, fill = CAGRYears04Cat)) +
+  geom_boxplot() +
+  geom_point(position = position_jitter(height = 0.1), 
+             alpha = 0.5, 
+             color = "gray52") +
+  # Annotate median values below the boxplots
+  geom_text(
+    data = median_cagryears04,
+    aes(
+      x = MedianCAGRYears04,
+      y = CAGRYears04Cat,
+      label = paste0(round(MedianCAGRYears04*100, 0), "%")
+    ),
+    vjust = -5.4,
+    hjust = 0.5,
+    color = "gray30",
+    size = 3.5,
+    fontface = "bold"
+  ) +
+  geom_text(
+    data = median_cagryears04,
+    aes(
+      x = .22,
+      y = CAGRYears04Cat,
+      label = paste0("n = ", n)
+    ),
+    color = "grey60",
+    size = 4.5,
+    fontface = "bold"
+  ) +
+  labs(
+    title = "Segmentation by Growth % - Mature Clubs",
+    subtitle = ("Growth % shown for the Average Club in each Category"),
+    x = "Growth % (Years 0-4)",
+    y = "Category"
+  ) +
+  scale_y_discrete(limits = c("Low", "Medium", "High")) +
+  scale_fill_manual(values = custom_palette) +
+  scale_x_continuous(labels = function(x) paste0(round(x*100, 0), "%")) +
+  fit_theme()
+```
+
+## Matrix: Growth % (Years 0-4) vs EBITDA PER SQFT
+
+*Chart: Matrix of clubs along Profitability and Growth %*
+
+*Text: Only two clubs hit the sweet spot of high growth and high profitability*
+
+```{r matrix-growth-profit, fig.height=8, fig.width=10}
+# Subset to records where CAGRYears47 is not NULL and exclude 309 - Miami Beach (low revenue)
+plot_data <- club_perf_year4 %>%
+  filter(!is.na(CAGRYears04) & RevenuePerSqFt > 40)
+
+# Calculate 75 percentiles
+perc75_cagr <- plot_data %>%
+  filter(CAGRYears04Cat == "High") %>%
+  summarise(
+    min_cagr = min(CAGRYears04, na.rm = TRUE)
+  ) %>%
+  pull(min_cagr)
+
+perc75_ebitda <- plot_data %>%
+  filter(EBITDAPerSqFtCat == "High") %>%
+  summarise(
+    min_ebitda = min(EBITDAPerSqFt, na.rm = TRUE)
+  ) %>%
+  pull(min_ebitda)
+
+# Create Plot
+ggplot(plot_data %>% filter(EBITDAPerSqFt < perc75_ebitda | CAGRYears04 < perc75_cagr),
+       aes(x = CAGRYears04, y = EBITDAPerSqFt, label = ClubNumber)) +
+  geom_point(color = custom_palette[1], 
+             alpha = 0.7, 
+             size = 4) +
+  geom_text(vjust = -0.8, 
+            size = 4, 
+            color = custom_palette[2]
+            ) +
+  geom_hline(yintercept = perc75_ebitda, 
+             linetype = "dashed", 
+             color = custom_palette[3]
+             ) +
+  geom_vline(xintercept = perc75_cagr, 
+             linetype = "dashed", 
+             color = custom_palette[3]
+             ) +
+  annotate("text", x = perc75_cagr, y = 100,
+           label = "-> High Growth",
+           hjust = -0.2,
+           vjust = 0,
+           color = custom_palette[3],
+           size = 3.5,
+           fontface = "bold"
+           ) +
+  annotate("text", x = -0.05, y = perc75_ebitda, na.rm = TRUE,
+           label = "^ High Profitability",
+           hjust = 0.2,
+           vjust = -1.2,
+           color = custom_palette[3],
+           size = 3.5,
+           fontface = "bold") +
+  geom_point(data = plot_data %>% filter(EBITDAPerSqFt >= perc75_ebitda & CAGRYears04 >= perc75_cagr),
+             aes(x = CAGRYears04, y = EBITDAPerSqFt),
+             color = custom_palette[1], 
+             alpha = 0.7, 
+             size = 4) +
+  geom_text(
+          data = plot_data %>% filter(EBITDAPerSqFt >= perc75_ebitda & CAGRYears04 >= perc75_cagr),
+          aes(x = CAGRYears04, y = EBITDAPerSqFt, label = ClubName),
+          vjust = -0.8,
+          size = 4,
+          color = custom_palette[2]
+  ) +
+  scale_x_continuous(labels = percent, limits = c(-0.07, 0.26)) +
+  scale_y_continuous(limits = c(-10, 100)) +
+  labs(
+    title = "Growth % vs Profitabilty Matrix",
+    subtitle = "Mature Clubs",
+    x = "Growth % (Years 0-4)",
+    y = "EBITDA Per SqFt ($)"
+  ) +
+  fit_theme()
+```
+
+## EBITDA PER SQFT and Growth %: Top Clubs
+
+*Chart: List of Top Clubs according to Profitability and Growth %*
+
+*Text: High-profit clubs have EBITDA (per sqft) above $50. In the case of Growth %, top clubs have double-digit growth rates (Years 0-4) of active members.*
+
+```{r top-clubs, fig.height=10, fig.width=8}
+med_cagr <- plot_data %>%
+  summarise(
+    med_cagr = mean(CAGRYears04, na.rm = TRUE)
+  ) %>%
+  pull(med_cagr)
+
+med_ebitda <- plot_data %>%
+  summarise(
+    med_ebitda = median(EBITDAPerSqFt, na.rm = TRUE)
+  ) %>%
+  pull(med_ebitda)
+
+# --- Chart 1: EBITDA per SqFt ---
+ebitda_persqt_sorted <- club_perf_year4 %>%
+  filter(!is.na(CAGRYears04) & RevenuePerSqFt > 40) %>%
+  filter(EBITDAPerSqFtCat == "High") %>%
+  arrange(EBITDAPerSqFt)
+
+p1 <- ggplot(ebitda_persqt_sorted, aes(x = EBITDAPerSqFt, 
+                                       y = reorder(ClubName, EBITDAPerSqFt))
+             ) +
+  geom_point(size = 4, 
+             alpha = 0.8, 
+             color = custom_palette[1]) +
+  geom_segment(aes(x = 0, 
+                   xend = EBITDAPerSqFt, 
+                   yend = reorder(ClubName, EBITDAPerSqFt)
+                   ),
+               color = custom_palette[1], 
+               alpha = 0.4) +
+  scale_x_continuous(labels = function(x) paste0("$", round(x, 1)), 
+                     limits = c(0, 100)
+  ) +
+  geom_vline(xintercept = med_ebitda, 
+             linetype = "dashed", 
+             color = custom_palette[3], 
+             linewidth = 0.8
+             ) +
+  annotate("text", 
+           x = med_ebitda, 
+           y = Inf, 
+           na.rm = TRUE,
+           label = paste0("Avg Club: $", med_ebitda),
+           hjust = -0.06, 
+           vjust = 1.2, 
+           color = custom_palette[3], 
+           size = 3.5, 
+           fontface = "bold") +
+  labs(
+    title = "High Profitability Clubs",
+    subtitle = "Mature Clubs - Y4",
+    x = "",
+    y = ""
+  ) +
+  fit_theme() +
+  theme(
+    panel.grid.major.x = element_line(color = "gray90", linewidth = 0.2)
+  )
+
+# --- Chart 2: CAGR Years 4-7 ---
+cagr_year4_sorted <- club_perf_year4 %>%
+  filter(!is.na(CAGRYears04) & RevenuePerSqFt > 40) %>%
+  filter(CAGRYears04Cat == "High") %>%
+  arrange(CAGRYears04PercRank)
+
+p2 <- ggplot(cagr_year4_sorted, 
+             aes(x = CAGRYears04, 
+                 y = reorder(ClubName, CAGRYears04))
+             ) +
+  geom_point(size = 4, 
+             alpha = 0.8, 
+             color = custom_palette[2]
+             ) +
+  geom_segment(aes(x = 0, 
+                   xend = CAGRYears04, 
+                   yend = reorder(ClubName, CAGRYears04)
+                   ),
+               color = custom_palette[2], 
+               alpha = 0.45) +
+  scale_x_continuous(labels = scales::percent, 
+                     limits = c(0, 0.25)
+                     ) +
+  geom_vline(xintercept = med_cagr, 
+             linetype = "dashed", 
+             color = custom_palette[3], 
+             linewidth = 0.8) +
+  annotate("text", x = med_cagr, y = Inf, 
+           label = paste0("Avg Club: ", scales::percent(med_cagr, accuracy = 0.01)),
+           hjust = -0.06, vjust = 1.2, 
+           color = custom_palette[3], 
+           size = 3.5, 
+           fontface = "bold") +
+  labs(
+    title = "High Growth % Clubs",
+    subtitle = "Years 0-4",
+    x = "",
+    y = ""
+  ) +
+  fit_theme() +
+  theme(
+    panel.grid.major.x = element_line(color = "gray90", linewidth = 0.2)
+  )
+
+# --- Combine plots vertically ---
+p1 + plot_spacer() + p2 + plot_layout(ncol = 1, heights = c(1, 0.1, 1))
+```
+
+## Feature Importance After Running Statistical Model
+
+*Chart: What are the most important factors driving profitability?*
+
+*Text: Size, female population and RentPSF are the top three factors.*
+
+```{r feature-importance, fig.height=8, fig.width=10}
+# Chart: Sucess Factors Behind Profitability
+# Create the plot
+ggplot(rf_importance, aes(x = Importance, y = Variable, fill = Importance)) +
+  geom_col(width = 0.7, alpha = 0.9) +
+  scale_fill_gradient(
+    low = "#0077bb",
+    high = "#ee7733",
+    name = "Importance Score"
+  ) +
+  scale_x_continuous(
+    labels = comma,
+    name = "Importance Score"
+  ) +
+  labs(
+    title = "Random Forest Feature Importance",
+    subtitle = "Top 20 Features by Mean Decrease in Gini",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 10),
+    axis.text.y = element_text(size = 9, color = "black"),
+    legend.position = "right",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
