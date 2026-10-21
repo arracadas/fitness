@@ -18,14 +18,30 @@ club_perf_year4 <- readRDS("./data/club_perf_year4.rds")
 rf_importance <- readRDS("./data/rf_importance.rds")
 
 # Note
+# Change CAGR to Years 3-6 instead of 4-7!!  See query below.
 # club_perf_year4 may have null values for either CAGRYears04 or CAGRYears47
 # CAGRYears47 is null when OpenYear >= 2017
 
+# These clubs (Michigan) have no financial data
+# 601 Comstock Park
+# 602 Byron Center
+# 603 Grand Haven
+# 604 Grand Rapids
+# 605 Greenville
+# 606 Holland
+# 607 Holland South
+# 608 Muskegon North
+# 609 Muskegon
+# 610 Plainfield
+# 651 Rice Lake
+
+
 # Check rows where CAGRYears47 is NULL and select specific columns
-# club_perf_year4 %>%
-#   filter(is.na(CAGRYears47)) %>%
-#   select(ClubNumber, ClubName, OpenYear, YearNumber, CAGRYears47, CAGRYears47PercRank) %>%
-#   arrange(OpenYear, ClubNumber)
+# Total of 21 clubs have no data for CAGRYears47!
+club_perf_year4 %>%
+  filter(is.na(CAGRYears47)) %>%
+  select(ClubNumber, ClubName, State, OpenYear, YearNumber) %>%
+  arrange(OpenYear, ClubNumber)
 
 # club_perf_year4 %>%
 #   filter(!is.na(CAGRYears04) & RevenuePerSqFt > 40) %>%

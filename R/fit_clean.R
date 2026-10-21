@@ -195,7 +195,7 @@ eft_dues_df <- eft_dues %>%
 ebitda_df <- ebitda %>%
   filter(!is.na(EBITDA))
 
-# These clubs have no financial data
+# These clubs (Michigan) have no financial data
 # 601 Comstock Park
 # 602 Byron Center
 # 603 Grand Haven
@@ -274,6 +274,19 @@ ebitda_df <- ebitda_df %>%
   update_club_location() %>%
   join_and_select("EBITDA")
 
+
+# Find ClubNumbers and ClubNames in club_dim that are NOT in revenue_df
+missing_in_revenue <- club_dim %>%
+  select(ClubNumber, ClubName, State) %>%
+  anti_join(distinct(revenue_df, ClubNumber), by = "ClubNumber")
+
+missing_in_ebitda <- club_dim %>%
+  select(ClubNumber, ClubName, State) %>%
+  anti_join(distinct(ebitda_df, ClubNumber), by = "ClubNumber")
+
+# View the result:  MI clubs are missing
+# missing_in_revenue
+# missing_in_ebitda
 
 # ============================================================================
 # 4: ROLLUP FINANCIAL DATA BY YEAR
