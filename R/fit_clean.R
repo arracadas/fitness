@@ -153,12 +153,6 @@ club_dim <- club_dim %>%
 club_dim <- club_dim %>%
   filter(OpenDate < as.Date("2025-01-01"))  # Only clubs opened before 2025
 
-# Shift OpenYear for Frederick, Bowie and Hagerstown because Members data start in 2015
-club_dim <- club_dim %>%
-  mutate(
-    OpenYear = ifelse(ClubNumber %in% c(101, 102, 103), 2010, OpenYear)
-  )
-
 
 # Clean dollar amounts for financial data
 clean_and_convert <- function(column) {
@@ -310,7 +304,6 @@ eft_dues_year_df <- select_december(eft_dues_df, "EFTDues")
 ebitda_year_df <- select_december(ebitda_df, "EBITDA")
 
 
-
 # ============================================================================
 # 5: TRANSFORM DATA - CALCULATE MEMBERS BY YEAR
 # ============================================================================
@@ -355,7 +348,7 @@ sql_average_members <- "
     OpenYears b ON a.ClubNumber = b.ClubNumber
   WHERE
     a.Year > b.OpenYear  -- Some clubs have ActiveMembers for earlier years
-    AND a.Year < 2025
+    AND a.Year < 2026
     AND b.State != 'MI'
   ORDER BY
     a.ClubNumber, a.Year
@@ -410,10 +403,25 @@ ebitda_year_df <- update_2020_with_avg(ebitda_year_df, "EBITDA")
 # ============================================================================
 # 7: TRANSFORM DATA - ADD YEAR NUMBER
 # ============================================================================
-members_year_df$YearNumber <- members_year_df$Year - members_year_df$OpenYear - 1 
-revenue_year_df$YearNumber <- revenue_year_df$Year - revenue_year_df$OpenYear - 1
-eft_dues_year_df$YearNumber <- eft_dues_year_df$Year - eft_dues_year_df$OpenYear - 1
-ebitda_year_df$YearNumber <- ebitda_year_df$Year - ebitda_year_df$OpenYear - 1
+# Shift OpenYear for Frederick, Bowie and Hagerstown because Members data start in 2015
+# This is temporary because YearNumber calculation substracts OpenYear from YearNumber
+# The shift is needed to make sure these clubs have a CAGR 3-6.
+# Also, for consistency, apply the same logic to other dataframes
+# Helper function to apply the same transformations to all dataframes
+apply_year_transformations <- function(df) {
+  df %>%
+    mutate(
+      OpenYearTemp = ifelse(ClubNumber %in% c(101, 102, 103), 2011, OpenYear),
+      YearNumber = Year - OpenYearTemp - 1
+    ) %>%
+    select(-OpenYearTemp)  # Drop the OpenYearTemp column
+}
+
+# Apply the transformations to all dataframes
+members_year_df <- apply_year_transformations(members_year_df)
+revenue_year_df <- apply_year_transformations(revenue_year_df)
+eft_dues_year_df <- apply_year_transformations(eft_dues_year_df)
+ebitda_year_df <- apply_year_transformations(ebitda_year_df)
 
 
 # Check that there are no dupes
@@ -450,7 +458,7 @@ ebitda_year_df$YearNumber <- ebitda_year_df$Year - ebitda_year_df$OpenYear - 1
 
 
 # ============================================================================
-# 8: TRANSFORM DATA - CALCULATE CAGR Y0-Y4 AND Y4-Y7
+# 8: TRANSFORM DATA - CALCULATE CAGR Y0-Y4, Y3-Y6 AND Y4-Y7
 # ============================================================================
 # Connect to DuckDB
 con <- dbConnect(duckdb::duckdb(), ":memory:")
@@ -494,7 +502,41 @@ sql_cagr <- "
       CAGRYears04
   ),
 
-  -- Step 2: Calculate CAGRYears47
+  -- Step 2: Calculate CAGRYears36
+  CAGRYears36 AS (
+    SELECT
+      ClubNumber,
+      POWER(
+        MAX(CASE WHEN YearNumber = 6 THEN AvgActiveMembers END) /
+        NULLIF(MAX(CASE WHEN YearNumber = 3 THEN AvgActiveMembers END), 0),
+        1.0 / 3
+      ) - 1 AS CAGRYears36
+    FROM
+      club_member_years
+    WHERE
+      YearNumber IN (3, 6)
+    GROUP BY
+      ClubNumber
+    HAVING
+      COUNT(DISTINCT YearNumber) = 2
+  ),
+
+  -- Step 2b: Calculate PERCENT_RANK for CAGRYears36
+  CAGRYears36WithRank AS (
+    SELECT
+      ClubNumber,
+      CAGRYears36,
+      PERCENT_RANK() OVER (ORDER BY CAGRYears36) AS CAGRYears36PercRank,
+      CASE
+        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears36) <= 0.25 THEN 'Low'
+        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears36) > 0.75 THEN 'High'
+        ELSE 'Medium'
+      END AS CAGRYears36Cat
+    FROM
+      CAGRYears36
+  ),
+
+  -- Step 3: Calculate CAGRYears47
   CAGRYears47 AS (
     SELECT
       ClubNumber,
@@ -513,7 +555,7 @@ sql_cagr <- "
       COUNT(DISTINCT YearNumber) = 2
   ),
 
-  -- Step 2b: Calculate PERCENT_RANK for CAGRYears47
+  -- Step 3b: Calculate PERCENT_RANK for CAGRYears47
   CAGRYears47WithRank AS (
     SELECT
       ClubNumber,
@@ -528,12 +570,15 @@ sql_cagr <- "
       CAGRYears47
   )
 
-  -- Step 3: Combine results using club_member_years as the driving table
+  -- Step 4: Combine results using club_member_years as the driving table
   SELECT
     cm.ClubNumber,
     c04.CAGRYears04,
     c04.CAGRYears04PercRank,
     c04.CAGRYears04Cat,
+    c36.CAGRYears36,
+    c36.CAGRYears36PercRank,
+    c36.CAGRYears36Cat,
     c47.CAGRYears47,
     c47.CAGRYears47PercRank,
     c47.CAGRYears47Cat
@@ -541,6 +586,8 @@ sql_cagr <- "
     (SELECT DISTINCT ClubNumber FROM club_member_years) cm
   LEFT JOIN
     CAGRYears04WithRank c04 ON cm.ClubNumber = c04.ClubNumber
+  LEFT JOIN
+    CAGRYears36WithRank c36 ON cm.ClubNumber = c36.ClubNumber
   LEFT JOIN
     CAGRYears47WithRank c47 ON cm.ClubNumber = c47.ClubNumber
 "
@@ -639,6 +686,9 @@ sql_percent_rank <- "
     cg.CAGRYears04,
     cg.CAGRYears04PercRank,
     cg.CAGRYears04Cat,
+    cg.CAGRYears36,
+    cg.CAGRYears36PercRank,
+    cg.CAGRYears36Cat,
     cg.CAGRYears47,
     cg.CAGRYears47PercRank,
     cg.CAGRYears47Cat
@@ -673,4 +723,3 @@ saveRDS(club_performance_year4_with_ranks, file = "./data/club_perf_year4.rds")
 # club_master <- readRDS("../data/club_master.rds")
 # club_performance <- readRDS("../data/club_performance.rds")
 # club_perf_year4 <- readRDS("../data/club_perf_year4.rds")
-
