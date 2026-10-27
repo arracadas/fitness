@@ -424,6 +424,10 @@ eft_dues_year_df <- apply_year_transformations(eft_dues_year_df)
 ebitda_year_df <- apply_year_transformations(ebitda_year_df)
 
 
+# members_year_df %>%
+#   filter(ClubNumber %in% c(112, 114, 116, 117)) %>%
+#   select(ClubNumber, ClubName, OpenYear, Year, YearNumber, AvgActiveMembers)
+
 # Check that there are no dupes
 # check_unique_club_year <- function(df) {
 #   # Count the number of rows per ClubNumber and Year combination

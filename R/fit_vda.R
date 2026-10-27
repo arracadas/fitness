@@ -509,7 +509,6 @@ ggplot(plot_data, aes(x = CAGRYears04, y = CAGRYears04Cat, fill = CAGRYears04Cat
 # ============================================================================
 # 9.2: PERFORMANCE METRICS - Growth % Years 4-7 MATURE CLUBS (YEAR 4)  OK
 # ============================================================================
-
 # Calculate median Growth % 04 for each category
 median_cagryears47 <- club_perf_year4 %>%
   filter(!is.na(CAGRYears47)) %>%
@@ -573,7 +572,6 @@ ggplot(plot_data, aes(x = CAGRYears47, y = CAGRYears47Cat, fill = CAGRYears47Cat
 # ============================================================================
 # 9.3: PERFORMANCE METRICS - Growth % Years 3-6, MATURE CLUBS (YEAR 4)  OK
 # ============================================================================
-
 # Calculate median Growth % 04 for each category
 median_cagryears36 <- club_perf_year4 %>%
   filter(!is.na(CAGRYears36)) %>%
@@ -635,19 +633,19 @@ ggplot(plot_data, aes(x = CAGRYears36, y = CAGRYears36Cat, fill = CAGRYears36Cat
 
 
 # ============================================================================
-# 10: MATRIX: Growth % (Years 0-4) vs EBITDA PER SQFT  OK
+# 10: MATRIX: Growth % (Years 4-7) vs EBITDA PER SQFT  OK
 # ============================================================================
 library(scales)  # For percent formatting
 
-# Subset to records where CAGRYears36 is not NULL and exclude 309 - Miami Beach (low revenue) 
+# Subset to records where CAGRYears47 is not NULL and exclude 309 - Miami Beach (low revenue) 
 plot_data <- club_perf_year4 %>% 
-  filter(!is.na(CAGRYears36) & RevenuePerSqFt > 40)
+  filter(!is.na(CAGRYears47) & RevenuePerSqFt > 40)
 
 # Calculate 75 percentiles
 perc75_cagr <- plot_data %>%
-  filter(CAGRYears36Cat == "High") %>%  
+  filter(CAGRYears47Cat == "High") %>%  
   summarise(
-    min_cagr = min(CAGRYears36, na.rm = TRUE)  
+    min_cagr = min(CAGRYears47, na.rm = TRUE)  
   ) %>%
   pull(min_cagr)
 
@@ -659,8 +657,8 @@ perc75_ebitda <- plot_data %>%
   pull(min_ebitda)  
 
 # Create Plot
-ggplot(plot_data %>% filter(EBITDAPerSqFt < perc75_ebitda | CAGRYears36 < perc75_cagr), 
-       aes(x = CAGRYears36, y = EBITDAPerSqFt, label = ClubNumber)) +
+ggplot(plot_data %>% filter(EBITDAPerSqFt < perc75_ebitda | CAGRYears47 < perc75_cagr), 
+       aes(x = CAGRYears47, y = EBITDAPerSqFt, label = ClubNumber)) +
   geom_point(color = custom_palette[1], 
              alpha = 0.7, 
              size = 4) +
@@ -677,7 +675,7 @@ ggplot(plot_data %>% filter(EBITDAPerSqFt < perc75_ebitda | CAGRYears36 < perc75
              color = custom_palette[3]
   ) +
   annotate("text", x = perc75_cagr, y = 100,
-           label = "-> High Growth",
+           label = ">> High Growth",
            hjust = -0.2,
            vjust = 0,
            color = custom_palette[3],
@@ -691,14 +689,14 @@ ggplot(plot_data %>% filter(EBITDAPerSqFt < perc75_ebitda | CAGRYears36 < perc75
            color = custom_palette[3],
            size = 3.5,
            fontface = "bold") +
-  geom_point(data = plot_data %>% filter(EBITDAPerSqFt >= perc75_ebitda & CAGRYears36 >= perc75_cagr),
-             aes(x = CAGRYears36, y = EBITDAPerSqFt),
+  geom_point(data = plot_data %>% filter(EBITDAPerSqFt >= perc75_ebitda & CAGRYears47 >= perc75_cagr),
+             aes(x = CAGRYears47, y = EBITDAPerSqFt),
              color = custom_palette[1], 
              alpha = 0.7, 
              size = 4) +
   geom_text(
-    data = plot_data %>% filter(EBITDAPerSqFt >= perc75_ebitda & CAGRYears36 >= perc75_cagr),
-    aes(x = CAGRYears36, y = EBITDAPerSqFt, label = ClubName),
+    data = plot_data %>% filter(EBITDAPerSqFt >= perc75_ebitda & CAGRYears47 >= perc75_cagr),
+    aes(x = CAGRYears47, y = EBITDAPerSqFt, label = ClubName),
     vjust = -0.8,
     size = 4,
     color = custom_palette[2]
@@ -708,7 +706,7 @@ ggplot(plot_data %>% filter(EBITDAPerSqFt < perc75_ebitda | CAGRYears36 < perc75
   labs(
     title = "Growth % vs Profitabilty Matrix",
     subtitle = "Mature Clubs",
-    x = "Growth % (Years 3-6)",
+    x = "Growth % (Years 4-7)",
     y = "EBITDA Per SqFt ($)"
   ) +
   fit_theme()  # Apply your reusable theme
@@ -722,7 +720,7 @@ library(patchwork)
 
 med_cagr <- plot_data %>%
   summarise(
-    med_cagr = mean(CAGRYears36, na.rm = TRUE)  
+    med_cagr = mean(CAGRYears47, na.rm = TRUE)  
   ) %>%
   pull(med_cagr)
 
@@ -734,7 +732,7 @@ med_ebitda <- plot_data %>%
 
 # --- Chart 1: EBITDA per SqFt ---
 ebitda_persqt_sorted <- club_perf_year4 %>%
-  filter(!is.na(CAGRYears36) & RevenuePerSqFt > 40) %>%
+  filter(!is.na(CAGRYears47) & RevenuePerSqFt > 40) %>%
   filter(EBITDAPerSqFtCat == "High") %>%
   arrange(EBITDAPerSqFt)
 
@@ -751,7 +749,7 @@ p1 <- ggplot(ebitda_persqt_sorted, aes(x = EBITDAPerSqFt,
   color = custom_palette[1], 
   alpha = 0.4) +
   scale_x_continuous(labels = function(x) paste0("$", round(x, 1)), 
-                     limits = c(0, 100)
+                     limits = c(0, 140)
   ) +
   geom_vline(xintercept = med_ebitda, 
              linetype = "dashed", 
@@ -779,23 +777,23 @@ p1 <- ggplot(ebitda_persqt_sorted, aes(x = EBITDAPerSqFt,
     panel.grid.major.x = element_line(color = "gray90", linewidth = 0.2)
   )
 
-# --- Chart 2: CAGR Years 3-6 ---
+# --- Chart 2: CAGR Years 4-7 ---
 cagr_year4_sorted <- club_perf_year4 %>%
-  filter(!is.na(CAGRYears36) & RevenuePerSqFt > 40) %>%
-  filter(CAGRYears36Cat == "High") %>%
-  arrange(CAGRYears36PercRank)
+  filter(!is.na(CAGRYears47) & RevenuePerSqFt > 40) %>%
+  filter(CAGRYears47Cat == "High") %>%
+  arrange(CAGRYears47PercRank)
 
 p2 <- ggplot(cagr_year4_sorted, 
-             aes(x = CAGRYears36, 
-                 y = reorder(ClubName, CAGRYears36))
+             aes(x = CAGRYears47, 
+                 y = reorder(ClubName, CAGRYears47))
 ) +
   geom_point(size = 4, 
              alpha = 0.8, 
              color = custom_palette[2]
   ) +
   geom_segment(aes(x = 0, 
-                   xend = CAGRYears36, 
-                   yend = reorder(ClubName, CAGRYears36)
+                   xend = CAGRYears47, 
+                   yend = reorder(ClubName, CAGRYears47)
   ),
   color = custom_palette[2], 
   alpha = 0.45) +
@@ -814,7 +812,7 @@ p2 <- ggplot(cagr_year4_sorted,
            fontface = "bold") +
   labs(
     title = "High Growth % Clubs",
-    subtitle = "Years 3-6",
+    subtitle = "Years 4-7",
     x = "",
     y = ""
   ) +
