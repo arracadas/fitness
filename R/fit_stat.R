@@ -4,41 +4,36 @@
 ## August 2026                                     ##
 ## by jortega                                      ##
 #####################################################
-# Install vip package
-# install.packages("vip", repos = c("https://bgreenwell.r-universe.dev", "https://cloud.r-project.org"))
 
-# Load libraries
-# NOTE: caret has been REMOVED. It masked yardstick metrics (precision, etc.)
-# causing namespace collisions. All modeling is handled by tidymodels.
 library(tidyverse)    # ggplot2, dplyr, purrr, tidyr, etc.
-library(tidymodels)   # parsnip, rsample, yardstick, recipes, tune, workflows
-library(corrplot)
-library(vip)          # For variable importance plots
-library(broom)        # For tidy()
-library(probably)     # For threshold_perf()
+library(tidymodels)   # parsnip, rsample, yardstick, recipes, workflows
+library(corrplot)     # correlation matrix visualization
+library(vip)          # variable importance plots
+library(broom)        # tidy model output
+library(probably)     # threshold performance analysis
 library(logistf)      # Firth logistic regression + FLIC (intercept correction)
 
 # =============================================
-# CLUB PERFORMANCE DRIVERS ANALYSIS WITH TIDYMODELS
-# Objective: Identify success drivers for EBITDAPerSqFt == "High"
+# CLUB PROFITABILITY DRIVERS ANALYSIS
+# Goal: Identify which club characteristics predict high
+#       profitability (EBITDAPerSqFt in the top 30%).
+# Data: 62 clubs at Year 4 of operation, pre-built by fit_clean.R.
 # =============================================
 
 # =============================================
-# STEP 1: PREPARE DATASET
+# STEP 1: LOAD DATA
 # =============================================
-# Read data
 club_perf_stat <- readRDS("./data/club_perf_year4.rds")
-
-# Subset data to eliminate Nulls and 309 - North Miami Beach (low revenue)
-# Removed CAGRYears04 from list of independent vars
-# club_stat <- club_perf_year4 %>%
-#   filter(!is.na(CAGRYears04) & RevenuePerSqFt > 40)
-
 
 # =============================================
 # STEP 2: FEATURE SELECTION
 # =============================================
-# Remove irrelevant fields
+# Drop columns that are identifiers, dates, or otherwise not usable
+# as predictors. Also drop columns derived from the outcome variables
+# (RevenuePerSqFt, EBITDAPerSqFt and their ranks/categories) to avoid
+# target leakage. ClosestClub, ShadowAnchor, and ADA are removed because
+# they have too many levels for n=62 (would create sparse, unstable dummies)
+# or are redundant proxies for State.
 club_stat <- club_perf_stat %>%
   select(
     -ClubNumber, -ClubName, -City, -Address, -ZipCode, -Latitude, -Longitude,
@@ -49,26 +44,29 @@ club_stat <- club_perf_stat %>%
     -CAGRYears47, -CAGRYears47PercRank, -CAGRYears47Cat,
     -CAGRYears36, -CAGRYears36PercRank, -CAGRYears36Cat
   ) %>%
-  # Remove highly correlated features
+  # Drop raw counts that are near-duplicates of retained percentage columns
   select(
-    -TAMedHHNetWorth, -TAFamilyHH, -PopAdult44, -PopAdult64, -TAPopMale 
+    -TAMedHHNetWorth, -TAFamilyHH, -PopAdult44, -PopAdult64, -TAPopMale
   ) %>%
-  # Remove features that are out of time
+  # Drop outcome-leaking columns (derived from EBITDAPerSqFt / RevenuePerSqFt)
   select(
     -RevenuePerSqFt, -RevenuePerSqFtPercRank, -RevenuePerSqFtCat,
     -EBITDAPerSqFt, -EBITDAPerSqFtPercRank
   )
 
+# Diagnostic: confirm class distribution before binarizing
 club_stat %>% group_by(EBITDAPerSqFtCat) %>%
   summarise(n = n())
 
 # =============================================
 # STEP 3: OUTCOME VARIABLE
 # =============================================
-# FIXED: "1" (highly profitable) must be the SECOND/last factor level,
-# because yardstick treats the LAST level as the event class for
-# sens/spec/precision/roc_auc. The previous relevel(ref = "1") made "1"
-# the FIRST level, which silently inverted the event class to "0".
+# Binary outcome: 1 = High profitability (top 30% by EBITDAPerSqFt),
+#                 0 = Low or Medium profitability.
+# Factor levels are set as c("0", "1") so that "1" (the event of
+# interest) is the LAST level. yardstick treats the last level as
+# the positive/event class for precision, recall, specificity, and
+# ROC AUC, and all metrics below use event_level = "second".
 club_stat <- club_stat %>%
   mutate(outcome = factor(ifelse(EBITDAPerSqFtCat == "High", 1, 0), levels = c(0, 1))) %>%
   select(-EBITDAPerSqFtCat)
@@ -76,18 +74,17 @@ club_stat <- club_stat %>%
 # =============================================
 # STEP 4: CORRELATION ANALYSIS
 # =============================================
-# Select numeric variables for correlation
+# Examine pairwise correlations among numeric predictors and their
+# correlation with the binary outcome. This is exploratory — the
+# correlation-based removal happens in Step 4b.
 numeric_club <- club_stat %>%
   select(where(is.numeric))
 
-# Correlation matrix
 cor_matrix <- cor(numeric_club, use = "complete.obs")
 corrplot(cor_matrix, method = "color", type = "upper", tl.col = "black", order = "hclust")
 
-# Top variables correlated with outcome
 cor_values <- cor(numeric_club, as.numeric(club_stat$outcome), use = "complete.obs")
 
-# Create a data frame with variable names and correlation values
 top_cor <- tibble(
   Variable = names(numeric_club),
   Correlation = cor_values
@@ -102,12 +99,14 @@ print(top_cor)
 # =============================================
 # STEP 4b: REMOVE HIGHLY CORRELATED PREDICTORS
 # =============================================
-# Iteratively remove numeric predictors that are highly correlated with each
-# other (|r| > 0.8). For each correlated pair, keep the variable with the
-# stronger absolute correlation to the outcome (pairwise complete obs, so
-# each variable is evaluated on its own available cases). This handles
-# clusters (e.g., the five trade-area population counts) one pair at a time
-# until no pair exceeds the threshold.
+# Iteratively remove numeric predictors with |r| > 0.8 to reduce
+# multicollinearity. For each correlated pair, the variable with the
+# weaker absolute correlation to the outcome is removed.
+# Pairwise complete observations are used for the outcome correlation
+# so each variable is evaluated on its own available cases (not just
+# rows that are complete across all predictors). The loop handles
+# clusters (e.g., the five trade-area population counts that are all
+# highly inter-correlated) one pair at a time.
 cor_threshold <- 0.8
 
 repeat {
@@ -120,13 +119,11 @@ repeat {
                         arr.ind = TRUE)
   if (nrow(high_cor_idx) == 0) break
 
-  # Most correlated remaining pair
   pair_r    <- abs(cor_matrix[high_cor_idx])
   max_pair  <- which.max(pair_r)
   v1 <- rownames(cor_matrix)[high_cor_idx[max_pair, 1]]
   v2 <- rownames(cor_matrix)[high_cor_idx[max_pair, 2]]
 
-  # Remove the one less correlated with the outcome
   if (abs(cor_outcome[v1]) >= abs(cor_outcome[v2])) {
     club_stat <- club_stat %>% select(-all_of(v2))
     cat(sprintf("Removed %s (r = %.3f with %s; outcome |r|: %.3f vs %.3f)\n",
@@ -140,38 +137,37 @@ repeat {
 
 
 # =============================================
-# STEP 5: VERIFY OUTCOME FACTOR LEVEL ORDER
+# STEP 5: VERIFY OUTCOME FACTOR LEVELS
 # =============================================
-# FIXED: Confirming "1" is LAST, since sens/spec/precision/roc_auc below all
-# depend on this for correctly identifying the positive/event class.
-levels(club_stat$outcome)  # should print: [1] "0" "1"
+# Assertion: "1" (High profitability) must be the last level so that
+# yardstick metrics below correctly treat it as the event class.
+levels(club_stat$outcome)  # expected: [1] "0" "1"
 
 # =============================================
 # STEP 6: FEATURE ENGINEERING RECIPE
 # =============================================
+# Preprocessing for the exploratory random forest in Step 7.
+# Dummy-encodes categorical predictors, removes zero-variance columns,
+# imputes missing numeric values with the median, and normalizes.
 club_rec <- recipe(outcome ~ ., data = club_stat) %>%
   step_dummy(all_nominal_predictors(), -all_outcomes()) %>%
-  # Remove zero-variance predictors (e.g., dummy variables)
   step_zv(all_predictors()) %>%
   step_impute_median(all_numeric_predictors()) %>%
   step_normalize(all_numeric_predictors())
 
 
 # =============================================
-# STEP 7: FEATURE IMPORTANCE VIA RANDOM FOREST (EXPLORATORY)
+# STEP 7: EXPLORATORY RANDOM FOREST — FEATURE IMPORTANCE
 # =============================================
-# NOTE: this RF is fit on the FULL dataset (club_stat) purely as an
-# EXPLORATORY diagnostic to see which features look influential. It is
-# NOT used for feature selection anymore -- the elastic net in Step 9
-# performs feature selection inside each CV fold (via its tuned L1
-# component), so the leakage caveat no longer applies to the models below.
-# Any performance numbers from this RF would still be optimistic (it saw
-# all observations) -- treat it as insight, not evaluation.
-
+# A random forest is fit on the full dataset to rank predictors by
+# importance. This is purely exploratory: the top 3 features guide
+# the predictor selection in Step 8. No performance metrics from
+# this model are reported because it saw all observations (in-sample
+# fit would be optimistic).
 set.seed(123)
 
 rf_spec <- rand_forest(
-  mtry  = round(sqrt(ncol(club_stat %>% select(-outcome)))),  # Features per split
+  mtry  = round(sqrt(ncol(club_stat %>% select(-outcome)))),
   trees = 500,
   mode  = "classification"
 ) %>%
@@ -183,37 +179,25 @@ rf_wf <- workflow() %>%
 
 rf_fit <- fit(rf_wf, data = club_stat)
 
-
-# Visualize feature importance
 rf_fit %>%
   extract_fit_parsnip() %>%
   vip(geom = "point", num_features = 20, plot_args = list(size = 3, color = "blue"))
 
-
-# Extract feature importance from the RF model
 rf_importance <- rf_fit %>%
   extract_fit_parsnip() %>%
   vi() %>%
   mutate(
     Importance = as.numeric(Importance),
-    Variable = reorder(Variable, Importance)  # Order by importance
+    Variable = reorder(Variable, Importance)
   ) %>%
-  head(20)  # Show top 20 features for clarity
+  head(20)
 
 saveRDS(rf_importance, file = "./data/rf_importance.rds")
 
-# Create the plot
 ggplot(rf_importance, aes(x = Importance, y = Variable, fill = Importance)) +
-  geom_col(width = 0.7, alpha = 0.9) +  # Horizontal bars with gradient fill
-  scale_fill_gradient(
-    low = "#0077bb",   # Blue for lower importance
-    high = "#ee7733",  # Orange for higher importance
-    name = "Importance Score"
-  ) +
-  scale_x_continuous(
-    labels = comma,   # Format axis labels
-    name = "Importance Score"
-  ) +
+  geom_col(width = 0.7, alpha = 0.9) +
+  scale_fill_gradient(low = "#0077bb", high = "#ee7733", name = "Importance Score") +
+  scale_x_continuous(labels = comma, name = "Importance Score") +
   labs(
     title = "Random Forest Feature Importance",
     subtitle = "Top 20 Features by Mean Decrease in Gini",
@@ -226,58 +210,57 @@ ggplot(rf_importance, aes(x = Importance, y = Variable, fill = Importance)) +
     plot.subtitle = element_text(hjust = 0.5, size = 10),
     axis.text.y = element_text(size = 9, color = "black"),
     legend.position = "right",
-    panel.grid.major.y = element_blank(),  # Remove horizontal grid lines
+    panel.grid.major.y = element_blank(),
     panel.grid.minor = element_blank()
   )
 
 
-
 # =============================================
-# STEP 8: PREPARE TOP-3 MODELING DATASET & BOOTSTRAP RESAMPLES
+# STEP 8: TOP-3 MODELING DATASET & BOOTSTRAP RESAMPLES
 # =============================================
-# Use only the top 3 predictors from the exploratory RF (Step 7):
-# Size, RentPSF, PopYoungAdult24. With n = 62 and a 16/46 class
-# imbalance, a parsimonious 3-predictor model is preferred over
-# the full feature set.
+# Reduce to the top 3 predictors identified by the exploratory RF:
+# Size, RentPSF, PopYoungAdult24. With n = 62, a parsimonious
+# 3-predictor model avoids overfitting.
+#
+# Bootstrap resampling (1000 resamples, stratified by outcome) is used
+# for validation instead of k-fold CV because:
+#   - CV folds would be tiny (~8 obs each), making fold-level metrics
+#     extremely noisy at this sample size.
+#   - Firth's bias correction is most effective on samples close to the
+#     full data size; bootstrap resamples contain ~63% unique observations.
+#   - Out-of-bag (OOB) predictions approximate performance on new clubs.
 top3_vars <- c("Size", "RentPSF", "PopYoungAdult24")
 
 club_top3 <- club_stat %>%
   select(outcome, all_of(top3_vars))
 
-# Bootstrap resamples for honest performance estimation.
-# Bootstrap (resampling with replacement, evaluating on out-of-bag
-# observations) is preferred over k-fold CV here because:
-#   - With n = 62, CV folds are tiny (7-8 obs), making fold-level
-#     estimates extremely noisy.
-#   - Firth's bias correction works best on samples close to the
-#     full data size, which bootstrap resamples provide (~63% unique obs).
-#   - OOB predictions approximate performance on genuinely new clubs.
 set.seed(456)
 boot_resamples <- bootstraps(club_top3, times = 1000, strata = outcome)
 
 
 # =============================================
-# STEP 9: FIRTH LOGISTIC REGRESSION WITH FLIC + BOOTSTRAP VALIDATION
+# STEP 9: FIRTH LOGISTIC REGRESSION (FLIC) + BOOTSTRAP VALIDATION
 # =============================================
-# Firth's penalized likelihood (Jeffreys prior) eliminates the first-order
-# bias in maximum likelihood estimates -- critical with n = 62 and only
-# 16 events, where standard ML can produce infinite or severely biased
-# coefficients under separation.
+# Standard maximum-likelihood logistic regression is biased with small
+# samples (n = 62, 19 events). Firth's penalized likelihood (Jeffreys
+# prior) eliminates this first-order bias and prevents infinite
+# estimates under separation.
 #
-# FLIC (Firth's Logistic regression with Intercept Correction) additionally
-# corrects the intercept so that predicted probabilities are calibrated
-# for the population prevalence rather than the sample prevalence. This
-# matters when predicting new clubs, whose class distribution matches
-# the population, not the training sample.
+# FLIC (Firth's Logistic regression with Intercept Correction) goes
+# one step further: it corrects the intercept so predicted probabilities
+# are calibrated for the population prevalence, not the sample prevalence.
+# This matters because bootstrap resamples have varying class balance,
+# and the deployment target is new clubs whose distribution matches the
+# population.
 
-# --- 9a: Fit FLIC on the FULL dataset (deployment model) ---
+# --- 9a: Fit FLIC on the full dataset (this is the deployment model) ---
 flic_full <- flic(outcome ~ Size + RentPSF + PopYoungAdult24,
                   data = club_top3)
 
 print("FLIC Model -- Firth Logistic Regression with Intercept Correction")
 print(summary(flic_full))
 
-# Coefficient interpretation
+# Express coefficients as odds ratios for interpretability
 flic_coef <- tibble(
   term       = names(coef(flic_full)),
   estimate   = coef(flic_full),
@@ -293,19 +276,19 @@ print("FLIC coefficients (odds ratios):")
 print(flic_coef)
 
 # --- 9b: Bootstrap validation ---
-# For each bootstrap resample: fit FLIC on the resample (in-bag),
-# predict on out-of-bag (OOB) observations, compute precision & recall.
-# This estimates how the model performs on new clubs.
-# A for-loop is used instead of purrr::map because flic()'s formula
-# evaluation does not resolve variables correctly inside map()'s
-# anonymous function environment.
+# For each bootstrap resample: fit FLIC on the in-bag sample, predict
+# on out-of-bag (OOB) observations, and compute precision and recall.
+# This estimates how the model will perform on genuinely new clubs.
+# A for-loop is used because flic()'s formula evaluation does not
+# resolve local variables correctly inside purrr::map()'s anonymous
+# function environment.
 set.seed(789)
 n_boot <- nrow(boot_resamples)
 flic_fits  <- vector("list", n_boot)
 oob_preds  <- vector("list", n_boot)
 
 for (i in 1:n_boot) {
-  split     <- boot_resamples$splits[[i]]
+  split      <- boot_resamples$splits[[i]]
   train_data <- analysis(split)
 
   flic_fits[[i]] <- tryCatch(
@@ -330,11 +313,12 @@ for (i in 1:n_boot) {
 n_success <- sum(!map_lgl(flic_fits, is.null))
 cat(sprintf("\nFLIC converged on %d / %d bootstrap resamples\n", n_success, n_boot))
 
-# Pooled OOB predictions across all bootstraps
 oob_predictions <- bind_rows(oob_preds)
 cat(sprintf("Total OOB predictions: %d\n", nrow(oob_predictions)))
 
-# --- Overall metrics on pooled OOB predictions ---
+# --- Pooled metrics across all OOB predictions ---
+# event_level = "second" ensures "1" (High profitability) is the
+# positive class for all metrics.
 boot_overall <- oob_predictions %>%
   summarise(
     n           = n(),
@@ -348,7 +332,7 @@ boot_overall <- oob_predictions %>%
 print("Bootstrap OOB Validation -- Pooled Metrics:")
 print(boot_overall)
 
-# --- Per-bootstrap metrics for variability ---
+# --- Per-resample metrics to quantify variability ---
 boot_per_sample <- map_dfr(oob_preds, function(df) {
   if (is.null(df) || nrow(df) == 0) return(NULL)
   tibble(
@@ -379,7 +363,7 @@ oob_conf_mat <- oob_predictions %>%
 print("Confusion Matrix -- Bootstrap OOB (pooled):")
 print(oob_conf_mat)
 
-# --- Distribution of OOB predicted probabilities ---
+# --- Distribution of OOB predicted probabilities by actual class ---
 oob_predictions %>%
   ggplot(aes(x = .pred_1, fill = outcome)) +
   geom_histogram(position = "identity", alpha = 0.5, bins = 20) +
