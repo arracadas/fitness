@@ -498,8 +498,8 @@ sql_cagr <- "
       CAGRYears04,
       PERCENT_RANK() OVER (ORDER BY CAGRYears04) AS CAGRYears04PercRank,
       CASE
-        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears04) <= 0.25 THEN 'Low'
-        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears04) > 0.75 THEN 'High'
+        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears04) <= 0.2 THEN 'Low'
+        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears04) > 0.7 THEN 'High'
         ELSE 'Medium'
       END AS CAGRYears04Cat
     FROM
@@ -532,8 +532,8 @@ sql_cagr <- "
       CAGRYears36,
       PERCENT_RANK() OVER (ORDER BY CAGRYears36) AS CAGRYears36PercRank,
       CASE
-        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears36) <= 0.25 THEN 'Low'
-        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears36) > 0.75 THEN 'High'
+        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears36) <= 0.2 THEN 'Low'
+        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears36) > 0.7 THEN 'High'
         ELSE 'Medium'
       END AS CAGRYears36Cat
     FROM
@@ -566,8 +566,8 @@ sql_cagr <- "
       CAGRYears47,
       PERCENT_RANK() OVER (ORDER BY CAGRYears47) AS CAGRYears47PercRank,
       CASE
-        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears47) <= 0.25 THEN 'Low'
-        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears47) > 0.75 THEN 'High'
+        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears47) <= 0.2 THEN 'Low'
+        WHEN PERCENT_RANK() OVER (ORDER BY CAGRYears47) > 0.7 THEN 'High'
         ELSE 'Medium'
       END AS CAGRYears47Cat
     FROM
@@ -662,13 +662,13 @@ sql_percent_rank <- "
       PERCENT_RANK() OVER (ORDER BY cp.RevenuePerSqFt) AS RevenuePerSqFtPercRank,
       PERCENT_RANK() OVER (ORDER BY cp.EBITDAPerSqFt) AS EBITDAPerSqFtPercRank,
       CASE
-        WHEN PERCENT_RANK() OVER (ORDER BY cp.RevenuePerSqFt) <= 0.25 THEN 'Low'
-        WHEN PERCENT_RANK() OVER (ORDER BY cp.RevenuePerSqFt) > 0.75 THEN 'High'
+        WHEN PERCENT_RANK() OVER (ORDER BY cp.RevenuePerSqFt) <= 0.2 THEN 'Low'
+        WHEN PERCENT_RANK() OVER (ORDER BY cp.RevenuePerSqFt) > 0.7 THEN 'High'
         ELSE 'Medium'
       END AS RevenuePerSqFtCat,
       CASE
-        WHEN PERCENT_RANK() OVER (ORDER BY cp.EBITDAPerSqFt) <= 0.25 THEN 'Low'
-        WHEN PERCENT_RANK() OVER (ORDER BY cp.EBITDAPerSqFt) > 0.75 THEN 'High'
+        WHEN PERCENT_RANK() OVER (ORDER BY cp.EBITDAPerSqFt) <= 0.2 THEN 'Low'
+        WHEN PERCENT_RANK() OVER (ORDER BY cp.EBITDAPerSqFt) > 0.7 THEN 'High'
         ELSE 'Medium'
       END AS EBITDAPerSqFtCat,
     FROM
