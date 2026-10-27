@@ -16,6 +16,7 @@ library(corrplot)
 library(vip)          # For variable importance plots
 library(broom)        # For tidy()
 library(probably)     # For threshold_perf()
+library(logistf)      # Firth logistic regression + FLIC (intercept correction)
 
 # =============================================
 # CLUB PERFORMANCE DRIVERS ANALYSIS WITH TIDYMODELS
@@ -42,8 +43,9 @@ club_stat <- club_perf_stat %>%
   select(
     -ClubNumber, -ClubName, -City, -Address, -ZipCode, -Latitude, -Longitude,
     -MarketClass, -TimeZone, -OpenDate, -MaturityDate, -MaturityFlag,
-    -AnnualRent, -ClosestClub, -OpenYear, -ClubNameAlt, -Year, -YearNumber, -ActiveMembers,
-    -Revenue, -EBITDA, -CAGRYears04, -CAGRYears04PercRank, -CAGRYears04Cat, 
+    -AnnualRent, -ClosestClub, -ShadowAnchor, -ADA, -OpenYear, -ClubNameAlt,
+    -Year, -YearNumber, -ActiveMembers,
+    -Revenue, -EBITDA, -CAGRYears04PercRank, -CAGRYears04Cat,
     -CAGRYears47, -CAGRYears47PercRank, -CAGRYears47Cat,
     -CAGRYears36, -CAGRYears36PercRank, -CAGRYears36Cat
   ) %>%
@@ -95,6 +97,46 @@ top_cor <- tibble(
 
 print("Top 12 variables correlated with outcome:")
 print(top_cor)
+
+
+# =============================================
+# STEP 4b: REMOVE HIGHLY CORRELATED PREDICTORS
+# =============================================
+# Iteratively remove numeric predictors that are highly correlated with each
+# other (|r| > 0.8). For each correlated pair, keep the variable with the
+# stronger absolute correlation to the outcome (pairwise complete obs, so
+# each variable is evaluated on its own available cases). This handles
+# clusters (e.g., the five trade-area population counts) one pair at a time
+# until no pair exceeds the threshold.
+cor_threshold <- 0.8
+
+repeat {
+  numeric_club <- club_stat %>% select(where(is.numeric))
+  cor_matrix   <- cor(numeric_club, use = "complete.obs")
+  cor_outcome  <- cor(numeric_club, as.numeric(club_stat$outcome),
+                      use = "pairwise.complete.obs")[, 1]
+
+  high_cor_idx <- which(abs(cor_matrix) > cor_threshold & upper.tri(cor_matrix),
+                        arr.ind = TRUE)
+  if (nrow(high_cor_idx) == 0) break
+
+  # Most correlated remaining pair
+  pair_r    <- abs(cor_matrix[high_cor_idx])
+  max_pair  <- which.max(pair_r)
+  v1 <- rownames(cor_matrix)[high_cor_idx[max_pair, 1]]
+  v2 <- rownames(cor_matrix)[high_cor_idx[max_pair, 2]]
+
+  # Remove the one less correlated with the outcome
+  if (abs(cor_outcome[v1]) >= abs(cor_outcome[v2])) {
+    club_stat <- club_stat %>% select(-all_of(v2))
+    cat(sprintf("Removed %s (r = %.3f with %s; outcome |r|: %.3f vs %.3f)\n",
+                v2, cor_matrix[v1, v2], v1, abs(cor_outcome[v2]), abs(cor_outcome[v1])))
+  } else {
+    club_stat <- club_stat %>% select(-all_of(v1))
+    cat(sprintf("Removed %s (r = %.3f with %s; outcome |r|: %.3f vs %.3f)\n",
+                v1, cor_matrix[v1, v2], v2, abs(cor_outcome[v1]), abs(cor_outcome[v2])))
+  }
+}
 
 
 # =============================================
@@ -189,236 +231,162 @@ ggplot(rf_importance, aes(x = Importance, y = Variable, fill = Importance)) +
   )
 
 
-# =============================================
-# STEP 8: BUILD SHARED CV FOLDS ON ALL FEATURES
-# =============================================
-# FIXED (leakage): Previously the top-10 RF features were selected on the FULL
-# dataset before CV folds were created, which leaked information into CV
-# performance estimates. We now keep ALL features and let the elastic net's
-# L1 component (tuned below) perform feature selection INSIDE each fold --
-# honest, data-driven selection. Both the baseline and final models below
-# use these SAME folds so their CV performance is directly comparable.
-prepped_data <- bake(prep(club_rec, training = club_stat), new_data = club_stat)
 
+# =============================================
+# STEP 8: PREPARE TOP-3 MODELING DATASET & BOOTSTRAP RESAMPLES
+# =============================================
+# Use only the top 3 predictors from the exploratory RF (Step 7):
+# Size, RentPSF, PopYoungAdult24. With n = 62 and a 16/46 class
+# imbalance, a parsimonious 3-predictor model is preferred over
+# the full feature set.
+top3_vars <- c("Size", "RentPSF", "PopYoungAdult24")
+
+club_top3 <- club_stat %>%
+  select(outcome, all_of(top3_vars))
+
+# Bootstrap resamples for honest performance estimation.
+# Bootstrap (resampling with replacement, evaluating on out-of-bag
+# observations) is preferred over k-fold CV here because:
+#   - With n = 62, CV folds are tiny (7-8 obs), making fold-level
+#     estimates extremely noisy.
+#   - Firth's bias correction works best on samples close to the
+#     full data size, which bootstrap resamples provide (~63% unique obs).
+#   - OOB predictions approximate performance on genuinely new clubs.
 set.seed(456)
-folds <- vfold_cv(prepped_data, v = 8, repeats = 3, strata = outcome)  # stratified given 46/16 imbalance
-
-
+boot_resamples <- bootstraps(club_top3, times = 1000, strata = outcome)
 
 
 # =============================================
-# STEP 9: BASELINE MODEL — SIMPLE LOGISTIC REGRESSION (SMALL PENALTY)
+# STEP 9: FIRTH LOGISTIC REGRESSION WITH FLIC + BOOTSTRAP VALIDATION
 # =============================================
-# Back to basics: a single logistic regression with a small fixed penalty.
-# No tuning grid, no hyperparameter selection. The small penalty just
-# stabilizes coefficient estimates at n ~ 60 (guards against perfect
-# separation) without meaningfully shrinking the signal.
+# Firth's penalized likelihood (Jeffreys prior) eliminates the first-order
+# bias in maximum likelihood estimates -- critical with n = 62 and only
+# 16 events, where standard ML can produce infinite or severely biased
+# coefficients under separation.
 #
-# EXPECTATION SETTING: the original simple model's ROC AUC of 0.743 was
-# inflated by RF feature-selection leakage. An honest number for this
-# data is likely in the 0.5-0.6 range. This model's value is simplicity,
-# interpretability, and truthful evaluation -- not peak performance.
+# FLIC (Firth's Logistic regression with Intercept Correction) additionally
+# corrects the intercept so that predicted probabilities are calibrated
+# for the population prevalence rather than the sample prevalence. This
+# matters when predicting new clubs, whose class distribution matches
+# the population, not the training sample.
 
-logit_spec <- logistic_reg(penalty = 0.001, mixture = 1) %>%  # tiny lasso penalty
-  set_engine("glmnet")
+# --- 9a: Fit FLIC on the FULL dataset (deployment model) ---
+flic_full <- flic(outcome ~ Size + RentPSF + PopYoungAdult24,
+                  data = club_top3)
 
-# No further preprocessing needed -- prepped_data is already dummy-encoded,
-# imputed, and normalized from club_rec above.
-logit_rec <- recipe(outcome ~ ., data = prepped_data)
+print("FLIC Model -- Firth Logistic Regression with Intercept Correction")
+print(summary(flic_full))
 
-logit_wf <- workflow() %>%
-  add_recipe(logit_rec) %>%
-  add_model(logit_spec)
+# Coefficient interpretation
+flic_coef <- tibble(
+  term       = names(coef(flic_full)),
+  estimate   = coef(flic_full),
+  odds_ratio = exp(coef(flic_full))
+) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    pct_odds_change = (odds_ratio - 1) * 100
+  ) %>%
+  arrange(desc(abs(estimate)))
 
-logit_cv_results <- fit_resamples(
-  logit_wf,
-  resamples = folds,              # same folds, comparable to previous runs
-  metrics   = metric_set(accuracy, sens, spec, precision, roc_auc),
-  control   = control_resamples(save_pred = TRUE)
-)
+print("FLIC coefficients (odds ratios):")
+print(flic_coef)
 
-print("Simple Logistic Regression (penalty = 0.001) CV Metrics:")
-collect_metrics(logit_cv_results)
+# --- 9b: Bootstrap validation ---
+# For each bootstrap resample: fit FLIC on the resample (in-bag),
+# predict on out-of-bag (OOB) observations, compute precision & recall.
+# This estimates how the model performs on new clubs.
+# A for-loop is used instead of purrr::map because flic()'s formula
+# evaluation does not resolve variables correctly inside map()'s
+# anonymous function environment.
+set.seed(789)
+n_boot <- nrow(boot_resamples)
+flic_fits  <- vector("list", n_boot)
+oob_preds  <- vector("list", n_boot)
 
-# --- Out-of-fold predictions, kept per repeat (NO probability averaging) ---
-logit_preds_rep <- collect_predictions(logit_cv_results, summarize = FALSE)
+for (i in 1:n_boot) {
+  split     <- boot_resamples$splits[[i]]
+  train_data <- analysis(split)
 
-# Pooled AUC per repeat -- the deployment-relevant number
-roc_auc_by_rep <- logit_preds_rep %>%
-  group_by(id) %>%
-  roc_auc(truth = outcome, .pred_1)
+  flic_fits[[i]] <- tryCatch(
+    flic(outcome ~ Size + RentPSF + PopYoungAdult24, data = train_data),
+    error = function(e) NULL
+  )
 
-print("Pooled ROC AUC per repeat:")
-print(roc_auc_by_rep)
+  if (!is.null(flic_fits[[i]])) {
+    oob_data <- assessment(split)
+    if (nrow(oob_data) > 0) {
+      pred_prob <- predict(flic_fits[[i]], newdata = oob_data, type = "response")
+      oob_preds[[i]] <- tibble(
+        id          = boot_resamples$id[i],
+        outcome     = oob_data$outcome,
+        .pred_1     = as.numeric(pred_prob),
+        .pred_class = factor(ifelse(.pred_1 > 0.5, "1", "0"), levels = c("0", "1"))
+      )
+    }
+  }
+}
 
+n_success <- sum(!map_lgl(flic_fits, is.null))
+cat(sprintf("\nFLIC converged on %d / %d bootstrap resamples\n", n_success, n_boot))
 
-# 1. The level order in THIS run
-levels(club_stat$outcome)# if this prints "1" "0" -- the old bug is back
+# Pooled OOB predictions across all bootstraps
+oob_predictions <- bind_rows(oob_preds)
+cat(sprintf("Total OOB predictions: %d\n", nrow(oob_predictions)))
 
-# 2. The proof -- look at the confusion matrix
-collect_predictions(logit_cv_results) %>%
+# --- Overall metrics on pooled OOB predictions ---
+boot_overall <- oob_predictions %>%
+  summarise(
+    n           = n(),
+    accuracy    = accuracy_vec(truth = outcome, estimate = .pred_class),
+    precision   = precision_vec(truth = outcome, estimate = .pred_class, event_level = "second"),
+    recall      = sens_vec(truth = outcome, estimate = .pred_class, event_level = "second"),
+    specificity = spec_vec(truth = outcome, estimate = .pred_class, event_level = "second"),
+    roc_auc     = roc_auc_vec(truth = outcome, .pred_1, event_level = "second")
+  )
+
+print("Bootstrap OOB Validation -- Pooled Metrics:")
+print(boot_overall)
+
+# --- Per-bootstrap metrics for variability ---
+boot_per_sample <- map_dfr(oob_preds, function(df) {
+  if (is.null(df) || nrow(df) == 0) return(NULL)
+  tibble(
+    precision = precision_vec(truth = df$outcome, estimate = df$.pred_class, event_level = "second"),
+    recall    = sens_vec(truth = df$outcome, estimate = df$.pred_class, event_level = "second")
+  )
+})
+
+boot_summary <- boot_per_sample %>%
+  summarise(
+    n_bootstraps   = n(),
+    precision_mean = mean(precision, na.rm = TRUE),
+    precision_sd   = sd(precision, na.rm = TRUE),
+    precision_q025 = quantile(precision, 0.025, na.rm = TRUE),
+    precision_q975 = quantile(precision, 0.975, na.rm = TRUE),
+    recall_mean    = mean(recall, na.rm = TRUE),
+    recall_sd      = sd(recall, na.rm = TRUE),
+    recall_q025    = quantile(recall, 0.025, na.rm = TRUE),
+    recall_q975    = quantile(recall, 0.975, na.rm = TRUE)
+  )
+
+print("Bootstrap OOB Validation -- Per-Resample Precision & Recall (mean [95% CI]):")
+print(boot_summary)
+
+# --- Confusion matrix on pooled OOB predictions ---
+oob_conf_mat <- oob_predictions %>%
   conf_mat(truth = outcome, estimate = .pred_class)
+print("Confusion Matrix -- Bootstrap OOB (pooled):")
+print(oob_conf_mat)
 
-# 3. The class counts
-table(club_stat$outcome)
-
-
-# Per-repeat class metrics, then averaged
-logit_metrics_rep <- logit_preds_rep %>%
-  group_by(id) %>%
-  metric_set(accuracy, sens, spec, precision)(truth = outcome, estimate = .pred_class) %>%
-  group_by(.metric) %>%
-  summarise(mean = mean(.estimate), sd = sd(.estimate), .groups = "drop")
-
-print("Class metrics (mean across repeats):")
-print(logit_metrics_rep)
-
-# --- Score distributions (the blind-spot check) ---
-logit_preds_rep %>%
+# --- Distribution of OOB predicted probabilities ---
+oob_predictions %>%
   ggplot(aes(x = .pred_1, fill = outcome)) +
   geom_histogram(position = "identity", alpha = 0.5, bins = 20) +
   geom_vline(xintercept = 0.5, linetype = "dashed") +
-  labs(title = "Predicted Probability Distribution by Actual Class",
-       subtitle = "Simple logistic regression, penalty = 0.001",
-       x = "Predicted P(High Profitability)",
-       fill = "Actual Class")
-
-
-
-# =============================================
-# STEP 10: FINAL MODEL — RANDOM FOREST (NON-LINEAR)
-# =============================================
-# Uses the SAME feature set as the baseline (all features, no leakage)
-# and the SAME CV folds, so its performance is directly comparable.
-rf_final_spec <- rand_forest(
-  mtry  = round(sqrt(ncol(prepped_data %>% select(-outcome)))),
-  trees = 500,
-  mode  = "classification"
-) %>%
-  set_engine("ranger")
-
-rf_final_wf <- workflow() %>%
-  add_recipe(logit_rec) %>%       # same full feature set, already preprocessed
-  add_model(rf_final_spec)
-
-rf_cv_results <- fit_resamples(
-  rf_final_wf,
-  resamples = folds,              # SAME folds as baseline for fair comparison
-  metrics   = metric_set(accuracy, sens, spec, precision, roc_auc),
-  control   = control_resamples(save_pred = TRUE)
-)
-
-print("Final (Random Forest) CV Metrics:")
-collect_metrics(rf_cv_results)
-
-
-# Check thresholds
-rf_preds <- collect_predictions(rf_cv_results)
-
-rf_threshold_data <- rf_preds %>%
-  threshold_perf(
-    truth      = outcome,
-    estimate   = .pred_1,
-    thresholds = seq(0.1, 0.6, by = 0.05),
-    metrics    = metric_set(precision, sens, spec, j_index)
+  labs(
+    title = "Predicted Probability Distribution by Actual Class",
+    subtitle = "FLIC model, bootstrap out-of-bag predictions",
+    x = "Predicted P(High Profitability)",
+    fill = "Actual Class"
   )
-
-# Plot with all four metrics
-rf_threshold_data %>%
-  ggplot(aes(x = .threshold, y = .estimate, color = .metric)) +
-  geom_line(linewidth = 1) +
-  labs(title = "Threshold vs. Sens/Spec/Precision/J-Index",
-       x = "Classification Threshold", y = "Metric Value")
-
-
-# Full picture across all thresholds
-rf_threshold_data %>%
-  pivot_wider(names_from = .metric, values_from = .estimate) %>%
-  arrange(.threshold) %>%
-  print(n = Inf)
-
-
-rf_threshold_data %>%
-  filter(.metric == "precision") %>%
-  arrange(desc(.estimate)) %>%
-  print(n = Inf)
-
-
-# =============================================
-# STEP 11: MODEL EVALUATION
-# =============================================
-
-## ---- Baseline: Logistic Regression ----
-# FIXED: uses the out-of-fold predictions from the tuning run (Step 9b)
-# instead of the removed logit_cv_results refit.
-logit_roc_data <- logit_preds %>%
-  roc_curve(truth = outcome, .pred_1)  # probability of class "1" (event)
-
-autoplot(logit_roc_data) +
-  labs(title = "ROC Curve — Baseline (Tuned Logistic Regression)",
-       subtitle = "Out-of-fold predictions, best tuned configuration")
-
-logit_conf_mat <- conf_mat(logit_preds, truth = outcome, estimate = .pred_class)
-print("Confusion Matrix — Baseline (Tuned Logistic Regression):")
-print(logit_conf_mat)
-autoplot(logit_conf_mat, type = "heatmap") +
-  labs(title = "Confusion Matrix — Baseline (Tuned Logistic Regression)")
-
-## ---- Final: Random Forest ----
-rf_roc_data <- rf_preds %>%
-  roc_curve(truth = outcome, .pred_1)
-
-autoplot(rf_roc_data) +
-  labs(title = "ROC Curve — Final (Random Forest)",
-       subtitle = "Cross-validated, averaged across folds")
-
-rf_conf_mat <- conf_mat(rf_preds, truth = outcome, estimate = .pred_class)
-print("Confusion Matrix — Final (Random Forest):")
-print(rf_conf_mat)
-autoplot(rf_conf_mat, type = "heatmap") +
-  labs(title = "Confusion Matrix — Final (Random Forest)")
-
-## ---- Side-by-side metric comparison ----
-# FIXED: logistic metrics come from logit_metrics (Step 9b); RF metrics from
-# fit_resamples. Mean/std_err are reported for RF; point estimates for the
-# logistic model (out-of-fold, summarized across repeats).
-model_comparison <- bind_rows(
-  logit_metrics %>%
-    mutate(model = "Logistic Regression (Baseline)") %>%
-    select(model, .metric, mean = .estimate),
-  collect_metrics(rf_cv_results) %>%
-    mutate(model = "Random Forest (Final)") %>%
-    select(model, .metric, mean)
-) %>%
-  arrange(.metric, model)
-
-print("Model Comparison — Baseline vs. Final:")
-print(model_comparison)
-
-
-# =============================================
-# STEP 12: BASELINE MODEL INTERPRETATION
-# =============================================
-# FIXED: previously fit logit_wf (which no longer exists after Option 2).
-# Finalize the tuning workflow with the best hyperparameters and fit once
-# on the FULL prepped_data to obtain a single model object for coefficient
-# interpretation. This is a legitimate full-data fit for INTERPRETATION
-# (not evaluation) -- CV metrics above are the honest performance numbers.
-final_logit_fit <- fit(finalize_workflow(logit_tune_wf, best_params),
-                       data = prepped_data)
-
-# Extract coefficients from Logistic Regression
-logit_coef <- final_logit_fit %>%
-  extract_fit_parsnip() %>%
-  tidy() %>%
-  filter(term != "(Intercept)") %>%
-  mutate(
-    Coefficient        = estimate,
-    Odds_Ratio          = exp(estimate),        # multiplicative change in odds per 1-unit increase
-    Pct_Odds_Change     = (exp(estimate) - 1) * 100,  # % change in odds, easier to communicate
-    Significant_at_05   = p.value < 0.05
-  ) %>%
-  arrange(desc(abs(Coefficient)))
-
-print("Logistic Regression coefficients (full model, ranked by magnitude):")
-print(logit_coef)
