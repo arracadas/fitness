@@ -333,8 +333,6 @@ ggMarginal(p, type = "histogram", fill = custom_palette[2])
 
 
 
-
-
 # ============================================================================
 # 7: BOXPLOT - REVENUE PER SQFT, MATURE CLUBS (YEAR 4)
 # ============================================================================
@@ -702,7 +700,7 @@ ggplot(plot_data %>% filter(EBITDAPerSqFt < perc75_ebitda | CAGRYears47 < perc75
     color = custom_palette[2]
   ) +
   scale_x_continuous(labels = percent, limits = c(-0.07, 0.15)) +
-  scale_y_continuous(limits = c(-10, 100)) +
+  scale_y_continuous(limits = c(-10, 120)) +
   labs(
     title = "Growth % vs Profitabilty Matrix",
     subtitle = "Mature Clubs",
