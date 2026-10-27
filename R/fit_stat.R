@@ -219,7 +219,7 @@ ggplot(rf_importance, aes(x = Importance, y = Variable, fill = Importance)) +
 # STEP 8: TOP-3 MODELING DATASET & BOOTSTRAP RESAMPLES
 # =============================================
 # Reduce to the top 3 predictors identified by the exploratory RF:
-# Size, RentPSF, PopYoungAdult24. With n = 62, a parsimonious
+# Size, OverallScore, RentPSF. With n = 62, a parsimonious
 # 3-predictor model avoids overfitting.
 #
 # Bootstrap resampling (1000 resamples, stratified by outcome) is used
@@ -229,7 +229,7 @@ ggplot(rf_importance, aes(x = Importance, y = Variable, fill = Importance)) +
 #   - Firth's bias correction is most effective on samples close to the
 #     full data size; bootstrap resamples contain ~63% unique observations.
 #   - Out-of-bag (OOB) predictions approximate performance on new clubs.
-top3_vars <- c("Size", "RentPSF", "PopYoungAdult24")
+top3_vars <- c("Size", "OverallScore", "RentPSF")
 
 club_top3 <- club_stat %>%
   select(outcome, all_of(top3_vars))
@@ -254,7 +254,7 @@ boot_resamples <- bootstraps(club_top3, times = 1000, strata = outcome)
 # population.
 
 # --- 9a: Fit FLIC on the full dataset (this is the deployment model) ---
-flic_full <- flic(outcome ~ Size + RentPSF + PopYoungAdult24,
+flic_full <- flic(outcome ~ Size + OverallScore + RentPSF,
                   data = club_top3)
 
 print("FLIC Model -- Firth Logistic Regression with Intercept Correction")
@@ -292,7 +292,7 @@ for (i in 1:n_boot) {
   train_data <- analysis(split)
 
   flic_fits[[i]] <- tryCatch(
-    flic(outcome ~ Size + RentPSF + PopYoungAdult24, data = train_data),
+    flic(outcome ~ Size + OverallScore + RentPSF, data = train_data),
     error = function(e) NULL
   )
 
